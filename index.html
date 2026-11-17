@@ -57,9 +57,9 @@ button{cursor:pointer}
 <main>
 <section id="view-login" class="login card">
 <h2>تسجيل الدخول</h2>
-<p style="color:var(--mut)">المدير: admin / admin123 — الموظف: staff / staff123<br>⚠️ غيّر كلمتي المرور فوراً بعد أول دخول.</p>
+<p style="color:var(--mut)">أدخل اسم المستخدم وكلمة المرور الخاصة بك.</p>
 <label>اسم المستخدم</label><input id="loginUser" value="admin">
-<label>كلمة المرور</label><input id="loginPass" type="password" value="admin123">
+<label>كلمة المرور</label><input id="loginPass" type="password">
 <button class="btn" style="width:100%" onclick="doLogin()">دخول</button>
 <p id="loginErr" style="color:#fca5a5"></p>
 </section>
@@ -145,7 +145,7 @@ async function loadAll(){
   const st=await t('settings');S.settings=Object.fromEntries(st.map(x=>[x.key,x.value]));
   document.getElementById('shopName').textContent=S.settings.shop_name||'نظام إدارة المحل';
   document.getElementById('setShop').textContent=S.settings.shop_name||'';
-  renderAll();
+  renderAll();refreshLines();
 }
 async function audit(action,table,ref,detail){if(!sb)return;await sb.from('audit_log').insert({username:user?user.username:'النظام',action,table_name:table,record_ref:ref,new_value:detail||''});}
 function show(v){document.querySelectorAll('main section').forEach(s=>s.classList.add('hidden'));document.getElementById('view-'+v).classList.remove('hidden');document.querySelectorAll('#mainNav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='reports')renderReports();}
@@ -211,14 +211,18 @@ async function saveProduct(){
   await audit(ex?'تعديل':'إضافة','المنتجات',code,name);await loadAll();alert('تم حفظ المنتج.');
 }
 function lineRow(list,prod){return `<div class="row"><div><select class="ln-prod">${S.products.map(p=>`<option value="${p.id}">${esc(p.name)} — ${fmt(p.sell_price)} (متوفر ${p.stock})</option>`).join('')}</select></div><div><input class="ln-qty" type="number" value="1" min="1"></div></div>`;}
+// السطر الأول يُبنى عند تحميل الصفحة قبل وصول المنتجات من Supabase، فتبقى قائمته فارغة.
+// هذه الدالة تعيد تعبئة كل قوائم المنتجات بعد كل تحميل للبيانات مع الحفاظ على الاختيار الحالي.
+function refreshLines(){document.querySelectorAll('.ln-prod').forEach(sel=>{const v=sel.value;sel.innerHTML=S.products.map(p=>`<option value="${p.id}">${esc(p.name)} — ${fmt(p.sell_price)} (متوفر ${p.stock})</option>`).join('');if(v)sel.value=v;});}
 function addSaleLine(){document.getElementById('saleLines').insertAdjacentHTML('beforeend',lineRow());calcSale();}
 function addPurLine(){document.getElementById('purLines').insertAdjacentHTML('beforeend',lineRow());calcPur();}
 function calcSale(){let t=0;document.querySelectorAll('#saleLines .row').forEach(r=>{const p=S.products.find(x=>x.id===r.querySelector('.ln-prod').value);t+=p?Number(r.querySelector('.ln-qty').value||0)*Number(p.sell_price):0;});const d=+document.getElementById('sDisc').value||0,paid=+document.getElementById('sPaid').value||0;document.getElementById('saleTotal').textContent=fmt(Math.max(0,t-d));document.getElementById('saleDue').textContent=fmt(Math.max(0,t-d-paid));}
 function calcPur(){let t=0;document.querySelectorAll('#purLines .row').forEach(r=>{const p=S.products.find(x=>x.id===r.querySelector('.ln-prod').value);t+=p?Number(r.querySelector('.ln-qty').value||0)*Number(p.buy_price):0;});document.getElementById('purTotal').textContent=fmt(t);}
 document.addEventListener('input',e=>{if(e.target.closest('#saleLines')||e.target.id==='sDisc'||e.target.id==='sPaid')calcSale();if(e.target.closest('#purLines'))calcPur();});
 async function submitSale(){
+ try{
   const rows=[...document.querySelectorAll('#saleLines .row')];if(!rows.length){alert('أضف منتجاً واحداً على الأقل.');return;}
-  for(const r of rows){const p=S.products.find(x=>x.id===r.querySelector('.ln-prod').value);const q=+r.querySelector('.ln-qty').value||0;if(q>Number(p.stock)){alert('الكمية المطلوبة من '+p.name+' أكبر من المخزون المتوفر ('+p.stock+').');return;}}
+  for(const r of rows){const p=S.products.find(x=>x.id===r.querySelector('.ln-prod').value);const q=+r.querySelector('.ln-qty').value||0;if(!p){alert('اختر منتجاً في كل سطر قبل الحفظ.');return;}if(q>Number(p.stock)){alert('الكمية المطلوبة من '+p.name+' أكبر من المخزون المتوفر ('+p.stock+').');return;}}
   const num='INV-'+(1000+S.sales.length+1);
   const items=rows.map(r=>{const p=S.products.find(x=>x.id===r.querySelector('.ln-prod').value);return{product_id:p.id,product_name:p.name,qty:+r.querySelector('.ln-qty').value||0,price:Number(p.sell_price),cost:Number(p.buy_price)};});
   const total=items.reduce((a,i)=>a+i.qty*i.price,0)-(+document.getElementById('sDisc').value||0);
@@ -229,11 +233,13 @@ async function submitSale(){
   for(const i of items){const p=S.products.find(x=>x.id===i.product_id);await sb.from('products').update({stock:Number(p.stock)-i.qty}).eq('id',p.id);}
   if(paid>0&&document.getElementById('sMethod').value!=='آجل (دين)')await sb.from('cash_txns').insert({date:today(),kind:'sale',method:document.getElementById('sMethod').value,note:num,amount_in:paid,amount_out:0,ref:num});
   await audit('إضافة','المبيعات',num,'الإجمالي '+total);await loadAll();alert('تم حفظ الفاتورة '+num+' — الإجمالي '+fmt(total)+' SDG');document.getElementById('saleLines').innerHTML='';addSaleLine();calcSale();
+ }catch(e){alert('خطأ في الحفظ: '+(e&&e.message?e.message:e));}
 }
 async function cancelSale(id,num){if(!confirm('إلغاء '+num+' وإعادة كمياتها للمخزون؟'))return;const items=S.sale_items.filter(i=>i.sale_id===id);for(const i of items){const p=S.products.find(x=>x.id===i.product_id);if(p)await sb.from('products').update({stock:Number(p.stock)+Number(i.qty)}).eq('id',p.id);}await sb.from('sales').update({status:'cancelled'}).eq('id',id);await audit('إلغاء فاتورة','المبيعات',num,'أُعيدت الكميات');await loadAll();}
 function renderSales(){document.getElementById('salesTable').innerHTML='<table><tr><th>الرقم</th><th>التاريخ</th><th>العميل</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th></th></tr>'+S.sales.slice().reverse().map(s=>{const due=saleTotal(s)-Number(s.paid);return `<tr><td>${esc(s.number)}</td><td>${s.date}</td><td>${esc(s.customer_name)}</td><td>${fmt(saleTotal(s))}</td><td>${fmt(s.paid)}</td><td>${fmt(due)}</td><td>${s.status==='active'?'نشطة':'ملغاة'}</td><td>${s.status==='active'?`<button class="btn red" onclick="cancelSale('${s.id}','${esc(s.number)}')">إلغاء</button>`:''}</td></tr>`;}).join('')+'</table>';}
 async function submitPurchase(){
   const rows=[...document.querySelectorAll('#purLines .row')];if(!rows.length){alert('أضف منتجاً واحداً على الأقل.');return;}
+  for(const r of rows){const p=S.products.find(x=>x.id===r.querySelector('.ln-prod').value);if(!p){alert('اختر منتجاً في كل سطر قبل الحفظ.');return;}}
   const num='PUR-'+(1000+S.purchases.length+1);
   const items=rows.map(r=>{const p=S.products.find(x=>x.id===r.querySelector('.ln-prod').value);return{product_id:p.id,product_name:p.name,qty:+r.querySelector('.ln-qty').value||0,cost:Number(p.buy_price)};});
   const paid=+document.getElementById('puPaid').value||0;
